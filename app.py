@@ -4,6 +4,7 @@ import jiosaavn
 import os
 import asyncio
 import tempfile
+import subprocess
 from traceback import print_exc
 from flask_cors import CORS
 from shazamio import Shazam
@@ -83,12 +84,40 @@ def recognize_song():
         return jsonify(error)
 
     tmp_path = None
+    wav_path = None
     try:
         # Save uploaded file to a temp location (keep original extension if present)
         suffix = os.path.splitext(audio_file.filename)[1] or '.ogg'
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             audio_file.save(tmp.name)
             tmp_path = tmp.name
+
+        size = os.path.getsize(tmp_path)
+        print(f"Received audio file: {audio_file.filename}, saved size: {size} bytes")
+        if size == 0:
+            error = {
+                "status": False,
+                "error": 'Uploaded file is empty (0 bytes) — check the upload!'
+            }
+            return jsonify(error)
+
+        # Re-encode to a clean 44.1kHz mono WAV using ffmpeg to avoid
+        # container/codec quirks that can trip up the recognizer
+        wav_fd, wav_path = tempfile.mkstemp(suffix='.wav')
+        os.close(wav_fd)
+
+        ffmpeg_cmd = [
+            'ffmpeg', '-y', '-i', tmp_path,
+            '-ar', '44100', '-ac', '1', '-f', 'wav', wav_path
+        ]
+        proc = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            error = {
+                "status": False,
+                "error": 'Failed to decode audio file with ffmpeg',
+                "details": proc.stderr[-1000:]
+            }
+            return jsonify(error)
 
         async def _recognize(path):
             shazam = Shazam()
@@ -97,7 +126,7 @@ def recognize_song():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            result = loop.run_until_complete(_recognize(tmp_path))
+            result = loop.run_until_complete(_recognize(wav_path))
         finally:
             loop.close()
 
@@ -114,6 +143,8 @@ def recognize_song():
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
+        if wav_path and os.path.exists(wav_path):
+            os.remove(wav_path)
 
 
 @app.route('/playlist/')
