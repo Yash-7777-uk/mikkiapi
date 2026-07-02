@@ -2,8 +2,11 @@ from flask import Flask, request, redirect, jsonify, json
 import time
 import jiosaavn
 import os
+import asyncio
+import tempfile
 from traceback import print_exc
 from flask_cors import CORS
+from shazamio import Shazam
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET", 'thankyoutonystark#weloveyou3000')
@@ -59,6 +62,58 @@ def get_song():
             "error": 'Song ID is required to get a song!'
         }
         return jsonify(error)
+
+
+@app.route('/song/recognize/', methods=['POST'])
+def recognize_song():
+    if 'file' not in request.files:
+        error = {
+            "status": False,
+            "error": 'Audio file is required in "file" field to recognize song!'
+        }
+        return jsonify(error)
+
+    audio_file = request.files['file']
+
+    if audio_file.filename == '':
+        error = {
+            "status": False,
+            "error": 'No file selected!'
+        }
+        return jsonify(error)
+
+    tmp_path = None
+    try:
+        # Save uploaded file to a temp location (keep original extension if present)
+        suffix = os.path.splitext(audio_file.filename)[1] or '.ogg'
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            audio_file.save(tmp.name)
+            tmp_path = tmp.name
+
+        async def _recognize(path):
+            shazam = Shazam()
+            return await shazam.recognize(path)
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(_recognize(tmp_path))
+        finally:
+            loop.close()
+
+        return jsonify(result)
+
+    except Exception as e:
+        print_exc()
+        error = {
+            "status": False,
+            "error": str(e)
+        }
+        return jsonify(error)
+
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 @app.route('/playlist/')
